@@ -234,15 +234,5 @@ results = client.search_batch(
     collection_name=COLLECTION_NAME,
     requests=search_queries
 )
-# results = client.search(
-#     collection_name=COLLECTION_NAME,
-#     query_vector=models.NamedSparseVector(
-#             name="text-sparse",
-#             vector=models.SparseVector(
-#                 indices=query_indices,
-#                 values=query_values
-#             )
-#         ),
-#     limit=3
-# )
+
 print(results)
