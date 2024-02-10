@@ -4,6 +4,7 @@ from transformers import AutoModelForMaskedLM, AutoTokenizer
 from qdrant_client import models, QdrantClient
 import torch
 from dotenv import load_dotenv
+from openai import OpenAI
 
 # model_id = "naver/splade-cocondenser-ensembledistil"
 model_id = "naver/efficient-splade-VI-BT-large-query"
@@ -12,6 +13,12 @@ tokenizer = AutoTokenizer.from_pretrained(model_id)
 model = AutoModelForMaskedLM.from_pretrained(model_id)
 
 load_dotenv()
+
+openAIClient = OpenAI(
+    # This is the default and can be omitted
+    api_key=os.getenv("OPENAI_API_KEY"),
+)
+
 qdrant_api_key = os.getenv("QDRANT_API_KEY")
 
 client = QdrantClient(url="https://e9d74ef0-b9f2-4b44-b5f0-e22ea1d6fc34.europe-west3-0.gcp.cloud.qdrant.io:6334",
@@ -19,8 +26,12 @@ client = QdrantClient(url="https://e9d74ef0-b9f2-4b44-b5f0-e22ea1d6fc34.europe-w
                       prefer_grpc=True)
 # client = QdrantClient("localhost")
 
-COLLECTION_NAME = "sparse_collection"
+COLLECTION_NAME = "hybrid_collection"
 
+
+def compute_dense_vector(prompt, model="text-embedding-3-large"):
+    prompt = prompt.replace("\n", " ")
+    return openAIClient.embeddings.create(input=prompt, model=model).data[0].embedding
 
 def compute_sparse_vector(prompt, tokenizer=tokenizer, model=model):
     """
@@ -147,7 +158,12 @@ documents = [
 
 client.recreate_collection(
     collection_name=COLLECTION_NAME,
-    vectors_config={},
+    vectors_config={
+        "text-dense": models.VectorParams(
+            size=3072,  # OpenAI Embeddings
+            distance=models.Distance.COSINE,
+        )
+    },
     sparse_vectors_config={
         "text-sparse": models.SparseVectorParams(
             index=models.SparseIndexParams(
@@ -165,10 +181,11 @@ for idx, doc in enumerate(documents):
     pt = models.PointStruct(
         id=idx,
         vector={
-          "text-sparse": models.SparseVector(
+            "text-dense": compute_dense_vector(doc["name"]),
+            "text-sparse": models.SparseVector(
                 indices=indices,
                 values=values
-          )
+            )
         },
         payload={
             "name": doc["name"],
@@ -193,6 +210,14 @@ query_values = query_vec.detach().numpy()[query_indices]
 
 search_queries = [
     models.SearchRequest(
+      vector=models.NamedVector(
+          name="text-dense",
+          vector=compute_dense_vector(prompt)
+        ),
+      limit=3,
+      with_payload=True
+    ),
+    models.SearchRequest(
         vector=models.NamedSparseVector(
             name="text-sparse",
             vector=models.SparseVector(
@@ -200,23 +225,24 @@ search_queries = [
                 values=query_values
             )
         ),
-        limit=3
+        limit=3,
+        with_payload=True
     )
 ]
 
-# results = client.search_batch(
-#     collection_name=COLLECTION_NAME,
-#     requests=search_queries
-# )
-results = client.search(
+results = client.search_batch(
     collection_name=COLLECTION_NAME,
-    query_vector=models.NamedSparseVector(
-            name="text-sparse",
-            vector=models.SparseVector(
-                indices=query_indices,
-                values=query_values
-            )
-        ),
-    limit=3
+    requests=search_queries
 )
+# results = client.search(
+#     collection_name=COLLECTION_NAME,
+#     query_vector=models.NamedSparseVector(
+#             name="text-sparse",
+#             vector=models.SparseVector(
+#                 indices=query_indices,
+#                 values=query_values
+#             )
+#         ),
+#     limit=3
+# )
 print(results)
